@@ -1,0 +1,97 @@
+name: food-steam-load
+
+x-python: &python
+  build: ./backend
+  image: food-steam-load-app:local
+  environment:
+    DB_HOST: db
+    DB_NAME: steam
+    DB_USER: steam
+    DB_PASSWORD: ${DB_PASSWORD:-steam-demo-db}
+    REDIS_URL: redis://redis:6379/0
+    JWT_SECRET: ${JWT_SECRET:-local-steam-board-secret-change-before-deploy}
+    SEED_DEMO: ${SEED_DEMO:-true}
+    ARTIFACT_DIR: /var/steam-evidence
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  volumes:
+    - evidence:/var/steam-evidence
+
+services:
+  frontend:
+    build: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-food-steam-load}-frontend
+    ports:
+      - "${FRONTEND_PORT:-18263}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -qO, /dev/null, http://127.0.0.1/index.html]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  backend:
+    <<: *python
+    container_name: ${COMPOSE_PROJECT_NAME:-food-steam-load}-backend
+    ports:
+      - "${BACKEND_PORT:-19263}:8000"
+    command: [uvicorn, src.main:app, --host, '0.0.0.0', --port, '8000']
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+  worker:
+    <<: *python
+    container_name: ${COMPOSE_PROJECT_NAME:-food-steam-load}-worker
+    command: [python, -m, src.worker]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "from pathlib import Path; import time; assert time.time() - Path('/tmp/steam-worker').stat().st_mtime < 45"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  db:
+    image: mysql:8.0
+    container_name: ${COMPOSE_PROJECT_NAME:-food-steam-load}-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-steam-demo-root}
+      MYSQL_DATABASE: steam
+      MYSQL_USER: steam
+      MYSQL_PASSWORD: ${DB_PASSWORD:-steam-demo-db}
+    ports:
+      - "${DB_PORT:-17763}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h127.0.0.1 -u"$$MYSQL_USER" "$$MYSQL_DATABASE" -e "SELECT 1" >/dev/null']
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 15s
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-food-steam-load}-redis
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
+  redis_data:
+  evidence:
