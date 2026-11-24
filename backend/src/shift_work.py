@@ -6,7 +6,8 @@ from sqlalchemy import select
 from .auth import DomainError
 from .config import utc_now
 from .constants import Equipment, ShiftState
-from .models import AuditEntry, EquipmentRun, ProductionShift, SteamMeter
+from .meter_segments import hour_segments, neighbors
+from .models import AuditEntry, EquipmentRun, MeterSwap, ProductionShift, SteamMeter
 
 HOUR = timedelta(hours=1)
 
@@ -27,6 +28,10 @@ def get_shift(db, shift_id, lock=False):
 
 def get_readings(db, shift_id):
     return list(db.scalars(select(SteamMeter).where(SteamMeter.shift_id == shift_id).order_by(SteamMeter.reading_at)))
+
+
+def get_swaps(db, shift_id):
+    return list(db.scalars(select(MeterSwap).where(MeterSwap.shift_id == shift_id).order_by(MeterSwap.swapped_at)))
 
 
 def get_runs(db, shift_id):
@@ -69,14 +74,40 @@ def add_reading(db, shift, data, user):
     for previous in readings:
         if previous.reading_at == data.reading_at:
             raise DomainError('reading_exists', '该时点已有原始读数')
-        if ((previous.reading_at < data.reading_at and previous.cumulative_kg > data.cumulative_kg) or
-                (previous.reading_at > data.reading_at and previous.cumulative_kg < data.cumulative_kg)):
-            raise DomainError('meter_reversed', '累计读数与相邻读数倒挂，请核对现场表盘')
+    before_kg, after_kg = neighbors(readings, get_swaps(db, shift.id), data.reading_at)
+    if ((before_kg is not None and before_kg > data.cumulative_kg) or
+            (after_kg is not None and after_kg < data.cumulative_kg)):
+        raise DomainError('meter_reversed', '累计读数与相邻读数倒挂，请核对现场表盘')
     row = SteamMeter(shift_id=shift.id, **data.model_dump(), recorded_by=user.id)
     db.add(row)
     db.flush()
     audit(db, user.username, 'meter.recorded', shift.code, reading_id=row.id, source=row.source_ref)
     return row
+
+
+def add_swap(db, shift, data, user):
+    require_open(shift)
+    if not shift.starts_at < data.swapped_at < shift.ends_at or data.swapped_at in boundaries(shift):
+        raise DomainError('swap_outside_slots', '换表时刻须在班次之内，且避开整点抄表边界')
+    existing = db.scalar(select(MeterSwap).where(
+        MeterSwap.shift_id == shift.id, MeterSwap.swapped_at == data.swapped_at))
+    if existing:
+        if (existing.old_final_kg != data.old_final_kg or existing.new_initial_kg != data.new_initial_kg
+                or existing.source_ref != data.source_ref):
+            raise DomainError('swap_conflict', '该时刻已入账换表记录，读数或凭证不一致',
+                              swap_id=existing.id, old_final_kg=float(existing.old_final_kg),
+                              new_initial_kg=float(existing.new_initial_kg), source_ref=existing.source_ref)
+        return existing, False
+    before_kg, after_kg = neighbors(get_readings(db, shift.id), get_swaps(db, shift.id), data.swapped_at)
+    if before_kg is not None and before_kg > data.old_final_kg:
+        raise DomainError('meter_reversed', '旧表末值低于相邻读数，请核对换表记录')
+    if after_kg is not None and after_kg < data.new_initial_kg:
+        raise DomainError('meter_reversed', '新表初值高于相邻读数，请核对换表记录')
+    row = MeterSwap(shift_id=shift.id, **data.model_dump(), recorded_by=user.id)
+    db.add(row)
+    db.flush()
+    audit(db, user.username, 'meter.swap_recorded', shift.code, swap_id=row.id, source=row.source_ref)
+    return row, True
 
 
 def validate_window(shift, data, runs, ignore_id=None):
@@ -114,7 +145,8 @@ def save_run(db, shift, data, user, run_id=None):
 
 
 def capture_rows(db, shift):
-    reads = {row.reading_at: row for row in get_readings(db, shift.id)}
+    readings = get_readings(db, shift.id)
+    reads = {row.reading_at: row for row in readings}
     times = boundaries(shift)
     missing = [slot.isoformat(timespec='minutes') for slot in times if slot not in reads]
     if missing:
@@ -127,25 +159,30 @@ def capture_rows(db, shift):
         validate_window(shift, row, checked)
         checked.append(row)
     rows = []
-    for index, (start, end) in enumerate(zip(times, times[1:])):
+    for index, hour in enumerate(hour_segments(readings, get_swaps(db, shift.id), times)):
+        for segment in hour['segments']:
+            if segment['kg'] < Decimal(0):
+                raise DomainError('meter_reversed', f'{shift.code} 分段差分为负，请核对换表或抄表读数',
+                                  segment_start=segment['start_at'].isoformat(timespec='minutes'),
+                                  segment_end=segment['end_at'].isoformat(timespec='minutes'))
+        start, end = hour['start'], hour['end']
         left, right = reads[start], reads[end]
-        delta = right.cumulative_kg - left.cumulative_kg
-        if delta < Decimal(0):
-            raise DomainError('meter_reversed', f'{shift.code} 小时差分为负', reading_id=right.id)
         runtime = {asset: 0.0 for asset in Equipment}
         for run in runs:
             overlap = min(end, run.ends_at) - max(start, run.starts_at)
             runtime[run.asset] += max(0, overlap.total_seconds() / 60)
         starts = sum(start <= item.starts_at < end for item in runs)
         rows.append({'shift': shift.code, 'start': start.isoformat(timespec='minutes'),
-                     'start_read_id': left.id, 'end_read_id': right.id, 'kg': float(delta),
+                     'start_read_id': left.id, 'end_read_id': right.id, 'kg': float(hour['kg']),
                      'features': [runtime[Equipment.RETORT], runtime[Equipment.CIP],
                                   runtime[Equipment.BLANCHER], starts, float(shift.ambient_c), index]})
     return rows
 
 
-def seal_shift(db, shift, user):
+def seal_shift(db, shift, user, swaps=()):
     require_open(shift)
+    for data in swaps:
+        add_swap(db, shift, data, user)
     capture_rows(db, shift)
     shift.state = ShiftState.SEALED
     shift.sealed_at = utc_now()

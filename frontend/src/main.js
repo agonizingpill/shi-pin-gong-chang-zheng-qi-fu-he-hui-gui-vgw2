@@ -76,6 +76,14 @@ app.addEventListener('submit', async event => {
   if (!form.matches('[data-login], [data-path]')) return;
   const button = form.querySelector('button[type="submit"], button:not([type])');
   const values = Object.fromEntries(new FormData(form));
+  let payload = values;
+  if (form.dataset.shape === 'seal') {
+    const {swapped_at, old_final_kg, new_initial_kg, source_ref} = values;
+    payload = {};
+    if (swapped_at || old_final_kg || new_initial_kg || source_ref) {
+      payload.swaps = [{swapped_at, old_final_kg, new_initial_kg, source_ref}];
+    }
+  }
   button.disabled = true;
   try {
     if (form.matches('[data-login]')) {
@@ -83,7 +91,7 @@ app.addEventListener('submit', async event => {
       if (!location.hash) history.replaceState(null, '', '#shifts');
       await render();
     } else {
-      const result = await api(form.dataset.path, values, form.dataset.method);
+      const result = await api(form.dataset.path, payload, form.dataset.method);
       if (form.dataset.route) {
         history.replaceState(null, '', `${location.pathname}#${form.dataset.route}/${result.id}`);
       }

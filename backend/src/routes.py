@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import select, text
 
@@ -7,8 +7,9 @@ from .auth import DomainError, allow, current_user, login
 from .config import ARTIFACT_DIR, Session, engine, redis
 from .constants import Role
 from .models import AuditEntry, EnergyReview, LoadPlan, ProductionShift
-from .schemas import CloseReview, CorrectRun, Login, OpenShift, RecordReading, RecordRun, RequestPlan, VerifySpike
-from .views import fields, meter_view, plan_view, review_view, run_view, shift_view, user_view
+from .schemas import (CloseReview, CorrectRun, Login, OpenShift, RecordReading, RecordRun, RecordSwap,
+                      RequestPlan, SealShift, VerifySpike)
+from .views import fields, meter_view, plan_view, review_view, run_view, shift_view, swap_view, user_view
 
 router = APIRouter()
 writer = allow(Role.OPERATOR, Role.SUPERVISOR)
@@ -73,6 +74,16 @@ def record_reading(shift_id: int, data: RecordReading, user=Depends(writer)):
         return meter_view(shift_work.add_reading(db, shift, data, user))
 
 
+@router.post('/shifts/{shift_id}/swaps', status_code=201)
+def record_swap(shift_id: int, data: RecordSwap, response: Response, user=Depends(writer)):
+    with Session.begin() as db:
+        shift = shift_work.get_shift(db, shift_id, lock=True)
+        swap, created = shift_work.add_swap(db, shift, data, user)
+        if not created:
+            response.status_code = 200
+        return swap_view(swap)
+
+
 @router.post('/shifts/{shift_id}/equipment', status_code=201)
 def record_run(shift_id: int, data: RecordRun, user=Depends(writer)):
     with Session.begin() as db:
@@ -88,10 +99,10 @@ def correct_run(shift_id: int, run_id: int, data: CorrectRun, user=Depends(super
 
 
 @router.post('/shifts/{shift_id}/seal')
-def handover(shift_id: int, user=Depends(writer)):
+def handover(shift_id: int, data: SealShift | None = None, user=Depends(writer)):
     with Session.begin() as db:
         shift = shift_work.get_shift(db, shift_id, lock=True)
-        return shift_view(db, shift_work.seal_shift(db, shift, user))
+        return shift_view(db, shift_work.seal_shift(db, shift, user, data.swaps if data else ()))
 
 
 @router.get('/plans')

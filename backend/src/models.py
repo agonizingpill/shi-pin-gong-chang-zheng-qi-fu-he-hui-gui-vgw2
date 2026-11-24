@@ -60,6 +60,22 @@ class SteamMeter(Base):
     recorded_at: Mapped[datetime] = mapped_column(default=utc_now)
 
 
+class MeterSwap(Base):
+    __tablename__ = 'meter_swaps'
+    __table_args__ = (
+        UniqueConstraint('shift_id', 'swapped_at'),
+        CheckConstraint('old_final_kg >= 0'), CheckConstraint('new_initial_kg >= 0'),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey('production_shifts.id'))
+    swapped_at: Mapped[datetime]
+    old_final_kg: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    new_initial_kg: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    source_ref: Mapped[str] = mapped_column(String(100))
+    recorded_by: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    recorded_at: Mapped[datetime] = mapped_column(default=utc_now)
+
+
 class EquipmentRun(Base):
     __tablename__ = 'equipment_runs'
     __table_args__ = (

@@ -74,6 +74,13 @@ small { font-size: .8em; }
 .gauges small { font-size: .76rem; color: var(--muted); font-weight: 600; }
 .capture-columns, .analysis-grid, .review-grid { display: grid; grid-template-columns: minmax(0, 1.42fr) minmax(0, 1fr); padding: 9px 22px 16px; gap: 22px; }
 .pane { min-width: 0; }
+.pane-sub { margin: 14px 0 2px; font-size: .98rem; }
+.hour-ledger { padding: 0 22px 16px; }
+.segment { padding: 3px 0; }
+.segment > span { color: var(--muted); margin-right: 4px; }
+.segment small { color: var(--muted); overflow-wrap: anywhere; display: inline-block; }
+.swap-mark { color: var(--ink-red); font-size: .7rem; font-weight: 750; letter-spacing: .14em; margin: 1px 0; }
+.seal-form { display: grid; gap: 4px; max-width: 460px; }
 .scroll { max-height: 304px; overflow: auto; scrollbar-color: var(--bar) transparent; }
 table { border-collapse: collapse; width: 100%; text-align: left; font-size: .85rem; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--rule); }
@@ -147,6 +154,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: .88; }
 @media (max-width: 1000px) {
   .desktop { grid-template-columns: minmax(200px, 26%) minmax(0, 1fr); gap: 15px; }
   .capture-columns, .analysis-grid, .review-grid { gap: 14px; padding-inline: 14px; }
+  .hour-ledger { padding-inline: 14px; }
   .mast nav a { padding-inline: 12px; }
   .gauges > div { padding-inline: 14px; }
 }

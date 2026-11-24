@@ -1,9 +1,10 @@
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 
+from .meter_segments import hour_segments
 from .models import EnergyReview, ProductionShift, SteamMeter, User
 from .planning import get_plan, get_spikes
-from .shift_work import boundaries, get_readings, get_runs
+from .shift_work import boundaries, get_readings, get_runs, get_swaps
 
 
 def fields(row, names):
@@ -16,6 +17,27 @@ def user_view(user):
 
 def meter_view(row):
     return fields(row, 'id shift_id reading_at cumulative_kg source_ref recorded_by recorded_at')
+
+
+def swap_view(row):
+    return fields(row, 'id shift_id swapped_at old_final_kg new_initial_kg source_ref recorded_by recorded_at')
+
+
+def hour_view(hour):
+    return {
+        'start': hour['start'].isoformat(timespec='minutes'),
+        'end': hour['end'].isoformat(timespec='minutes'),
+        'kg': float(hour['kg']) if hour['kg'] is not None else None,
+        'segments': [{
+            'start_at': segment['start_at'].isoformat(timespec='minutes'),
+            'end_at': segment['end_at'].isoformat(timespec='minutes'),
+            'start_kg': float(segment['start_kg']),
+            'end_kg': float(segment['end_kg']),
+            'kg': float(segment['kg']),
+            'start_source': segment['start_source'],
+            'end_source': segment['end_source'],
+        } for segment in hour['segments']],
+    }
 
 
 def run_view(row):
@@ -31,7 +53,10 @@ def shift_view(db, shift, detail=False):
     result.update(reading_count=len(readings), run_count=len(runs), expected_count=len(slots),
                   missing=[slot.isoformat(timespec='minutes') for slot in slots if slot not in recorded])
     if detail:
-        result.update(readings=[meter_view(row) for row in readings], runs=[run_view(row) for row in runs])
+        swaps = get_swaps(db, shift.id)
+        result.update(readings=[meter_view(row) for row in readings], runs=[run_view(row) for row in runs],
+                      swaps=[swap_view(row) for row in swaps],
+                      hours=[hour_view(hour) for hour in hour_segments(readings, swaps, slots)])
     return result
 
 

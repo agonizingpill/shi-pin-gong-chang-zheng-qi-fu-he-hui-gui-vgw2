@@ -9,7 +9,7 @@ from sqlalchemy import select
 from src.auth import password_hash
 from src.config import Session
 from src.constants import Equipment, Line, PlanState, Role, ShiftState
-from src.models import EquipmentRun, LoadPlan, ProductionShift, SteamMeter, User
+from src.models import EquipmentRun, LoadPlan, MeterSwap, ProductionShift, SteamMeter, User
 from src.planning import approve_plan, request_plan
 from src.shift_work import capture_rows
 from src.steam_model import estimate
@@ -20,6 +20,11 @@ ACCOUNTS = [
     ('supervisor', '陆师傅', Role.SUPERVISOR, 'SteamLead1064!'),
     ('viewer', '梁敏', Role.VIEWER, 'SteamView1064!'),
 ]
+
+# A-1121-B 20:35 总表拆检，临时换装 FM-B02；该小时耗汽为两块表各自增量之和。
+SWAP_SHIFT = 'A-1121-B'
+SWAP_HOUR = 6
+SPARE_INITIAL = 9350.0
 
 
 def seed_shifts(db, operator):
@@ -59,8 +64,19 @@ def seed_shifts(db, operator):
                 if length:
                     db.add(EquipmentRun(shift_id=shift.id, asset=asset, starts_at=window + timedelta(minutes=offset),
                                         ends_at=window + timedelta(minutes=offset + length), logged_by=operator.id))
-            cumulative = round(cumulative + increments[hour], 2)
+            if code == SWAP_SHIFT and hour == SWAP_HOUR:
+                old_part = round(increments[hour] * 35 / 60, 2)
+                new_part = round(increments[hour] - old_part, 2)
+                db.add(MeterSwap(shift_id=shift.id, swapped_at=window + timedelta(minutes=35),
+                                 old_final_kg=round(cumulative + old_part, 2), new_initial_kg=SPARE_INITIAL,
+                                 source_ref='换表记录单 HM-261121-35 / 总表 FM-A01 → 备表 FM-B02',
+                                 recorded_by=operator.id))
+                cumulative = round(SPARE_INITIAL + new_part, 2)
+            else:
+                cumulative = round(cumulative + increments[hour], 2)
             label = ' / 尖峰原表照片编号 P-19-1900' if index == 2 and hour == 4 else ''
+            if code == SWAP_SHIFT and hour >= SWAP_HOUR:
+                label += ' / 备表 FM-B02'
             db.add(SteamMeter(shift_id=shift.id, reading_at=window + timedelta(hours=1), cumulative_kg=cumulative,
                               source_ref=f'蒸汽交接簿-{day}日-B班 / {15 + hour}:00{label}', recorded_by=operator.id))
         db.flush()

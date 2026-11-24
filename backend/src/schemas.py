@@ -42,6 +42,17 @@ class RecordReading(Form):
     source_ref: str = Field(min_length=3, max_length=100)
 
 
+class RecordSwap(Form):
+    swapped_at: LocalTime
+    old_final_kg: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    new_initial_kg: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    source_ref: str = Field(min_length=3, max_length=100)
+
+
+class SealShift(Form):
+    swaps: list[RecordSwap] = Field(default_factory=list, max_length=6)
+
+
 class RecordRun(Form):
     asset: Equipment
     starts_at: LocalTime
